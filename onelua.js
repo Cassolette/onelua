@@ -3,9 +3,57 @@ const path = require("path");
 const luamin = require("luamin");
 const luaprint = require("./luaprint");
 
+class LuaPackage {
+    /**
+     * 
+     * @param {{}} pkg_config 
+     * @param {string} pkg_path 
+     */
+    constructor(pkg_config, pkg_dir, pkg_script) {
+        /** The package.json object */
+        this.packageConfig = pkg_config;
+        /** The path to the package's root dir */
+        this.packageDir = pkg_dir;
+        /** The path to the main Lua script */
+        this.mainScriptPath = pkg_script
+        /** The path to the main Lua script's dir */
+        this.mainDir = path.dirname(pkg_script);
+    }
+
+    /**
+     * Absolute path to the package.json of the package
+     * @param {*} package_json_path 
+     * @returns {LuaPackage?}
+     */
+    static fromPackageJson(package_json_path) {
+        var pkg_cfg = require(package_json_path);
+        if (!pkg_cfg)
+            return null;  // package.json not found
+
+        if (!pkg_cfg.onelua || !pkg_cfg.onelua.main)
+            return null;  // package.json found, but no onelua instructions / entry file
+
+        var pkg_path = path.dirname(package_json_path);
+        var pkg_script = path.resolve(pkg_path, pkg_cfg.onelua.main)
+        if (!fs.existsSync(pkg_script))
+            return null;  // main script doesn't exist
+        
+        return new LuaPackage(pkg_cfg, pkg_path, pkg_script);
+    }
+}
+
 class LuaScript {
-    constructor(path_absol) {
+    /**
+     * @param {string} path_absol 
+     * @param {LuaPackage?} pkg 
+     */
+    constructor(path_absol, pkg) {
         this.path = path_absol;
+        /**
+         * The script's package object
+         * @type {LuaPackage}
+         */
+        this.package = pkg;
         this.baseDir = path.dirname(path_absol);
     }
 
@@ -34,6 +82,12 @@ class OLProcessor {
 
         var currModuleId = 0;
 
+        /**
+         * 
+         * @param {LuaScript} script 
+         * @param {boolean} is_entry 
+         * @returns {number} moduleId
+         */
         var recurseResolve = (script, is_entry) => {
             if (script.path in modulesIds) {
                 /* already resolved */
@@ -45,10 +99,16 @@ class OLProcessor {
             require("decache")("luaparse");
             const luaparse = require("luaparse");
 
-            var get_required = (base_dir, module) => this.#getRequiredModule(base_dir, module);  // expose function to luaparse
+            /**
+             * 
+             * @param {LuaScript} base_script 
+             * @param {string} module 
+             * @returns {LuaScript?}
+             */
+            var get_required = (base_script, module) => this.#getRequiredModule(base_script, module);  // expose function to luaparse
 
             var new_astnode = (module, node) => {
-                let required = get_required(script.baseDir, module);
+                let required = get_required(script, module);
                 if (required == null)
                     throw `Invalid require: module "${module}" was not found in ${script.path}:${node.base.loc.start.line}`;
 
@@ -145,8 +205,14 @@ class OLProcessor {
         return this.minify ? luamin.minify(finalAst) : luaprint(finalAst);
     }
 
-    /* Get the associated LuaScript from this context */
-    #getRequiredModule(base_dir, module) {
+    /**
+     * Get the associated LuaScript from this context
+     * @param {LuaScript} base_script - The script that is including the module 
+     * @param {string} module - Module name
+     * @returns {LuaScript?}
+     */
+    #getRequiredModule(base_script, module) {
+        var base_dir = base_script.baseDir;
         /* first convert . to / */
         module = module.replace(/\./g, "/");
 
@@ -156,13 +222,20 @@ class OLProcessor {
         /* next, find the module relative to the baseDir */
         script_path = path.join(base_dir, module + ".lua");
         if (fs.existsSync(script_path))
-            return new LuaScript(script_path);
+            return new LuaScript(script_path, base_script.package);
 
         /* then find the module relative to the entry dir */
         var entry_dir = this.entryScript.baseDir;
         script_path = path.join(entry_dir, module + ".lua");
         if (fs.existsSync(script_path))
-            return new LuaScript(script_path);
+            return new LuaScript(script_path, base_script.package);
+        
+        /* then find the module relative to the script's main dir */
+        if (base_script.package) {
+            script_path = path.join(base_script.package.mainDir, module + ".lua");
+            if (fs.existsSync(script_path))
+                return new LuaScript(script_path, base_script.package);
+        }
 
         /* finally, find the module installed with npm */
         //console.dir(require.resolve.paths(module))
@@ -175,20 +248,11 @@ class OLProcessor {
         if (!pkg_path)
             return null;
 
-        var module_path = path.dirname(pkg_path);
+        var pkg = LuaPackage.fromPackageJson(pkg_path);
+        if (!pkg)
+            return null;  // invalid OL package
 
-        var pkg_cfg = require(pkg_path);
-        if (!pkg_cfg)
-            return null;  // package.json not found
-
-        if (!pkg_cfg.onelua || !pkg_cfg.onelua.main)
-            return null;  // package.json found, but no onelua instructions / entry file
-
-        script_path = path.resolve(module_path, pkg_cfg.onelua.main);
-        if (fs.existsSync(script_path))
-            return new LuaScript(script_path);
-
-        return null;
+        return new LuaScript(pkg.mainScriptPath, pkg);
     }
 
     #createFinalAst(modulesIds, modulesAst, mainAst) {
@@ -427,6 +491,12 @@ class OLProcessor {
 };
 
 module.exports = {
+    /**
+     * @param {string} entry - Absolute path to the Lua script or project directory
+     * @param {{}} options 
+     * @returns {string}
+     * @throws Throws on any error
+     */
     process: (entry, options) => {
         return new OLProcessor(entry, options).process();
     },

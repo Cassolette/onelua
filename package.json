@@ -1,6 +1,6 @@
 {
   "name": "@mousetool/onelua",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "Lua script merger bringing in the NPM workflow. Compiles multiple Lua scripts into one single script, and enables tracking of remote Lua packages.",
   "main": "onelua.js",
   "bin": {
