@@ -1,13 +1,14 @@
 const fs = require("fs");
 const path = require("path");
 const luamin = require("luamin");
+const resolver = require('resolve').sync;
 const luaprint = require("./luaprint");
 
 class LuaPackage {
     /**
-     * 
-     * @param {{}} pkg_config 
-     * @param {string} pkg_path 
+     *
+     * @param {{}} pkg_config
+     * @param {string} pkg_path
      */
     constructor(pkg_config, pkg_dir, pkg_script) {
         /** The package.json object */
@@ -22,7 +23,7 @@ class LuaPackage {
 
     /**
      * Absolute path to the package.json of the package
-     * @param {*} package_json_path 
+     * @param {*} package_json_path
      * @returns {LuaPackage?}
      */
     static fromPackageJson(package_json_path) {
@@ -37,15 +38,15 @@ class LuaPackage {
         var pkg_script = path.resolve(pkg_path, pkg_cfg.onelua.main)
         if (!fs.existsSync(pkg_script))
             return null;  // main script doesn't exist
-        
+
         return new LuaPackage(pkg_cfg, pkg_path, pkg_script);
     }
 }
 
 class LuaScript {
     /**
-     * @param {string} path_absol 
-     * @param {LuaPackage?} pkg 
+     * @param {string} path_absol
+     * @param {LuaPackage?} pkg
      */
     constructor(path_absol, pkg) {
         this.path = path_absol;
@@ -71,6 +72,12 @@ class OLProcessor {
         this.debug = options.debug;
         this.minify = options.minify;
         this.entryScript = new LuaScript(path.resolve(entry));
+        // // Search paths for packages
+        // this.packagePaths = [
+        //     "?.lua",
+        //     "?/init.lua",
+        //     "?/?.lua"
+        // ]
 
         if (!this.entryScript.exists()) throw "Entry script doesn't exist!";
     }
@@ -83,9 +90,9 @@ class OLProcessor {
         var currModuleId = 0;
 
         /**
-         * 
-         * @param {LuaScript} script 
-         * @param {boolean} is_entry 
+         *
+         * @param {LuaScript} script
+         * @param {boolean} is_entry
          * @returns {number} moduleId
          */
         var recurseResolve = (script, is_entry) => {
@@ -100,9 +107,9 @@ class OLProcessor {
             const luaparse = require("luaparse");
 
             /**
-             * 
-             * @param {LuaScript} base_script 
-             * @param {string} module 
+             *
+             * @param {LuaScript} base_script
+             * @param {string} module
              * @returns {LuaScript?}
              */
             var get_required = (base_script, module) => this.#getRequiredModule(base_script, module);  // expose function to luaparse
@@ -205,9 +212,10 @@ class OLProcessor {
         return this.minify ? luamin.minify(finalAst) : luaprint(finalAst);
     }
 
+
     /**
      * Get the associated LuaScript from this context
-     * @param {LuaScript} base_script - The script that is including the module 
+     * @param {LuaScript} base_script - The script that is including the module
      * @param {string} module - Module name
      * @returns {LuaScript?}
      */
@@ -222,37 +230,50 @@ class OLProcessor {
         /* next, find the module relative to the baseDir */
         script_path = path.join(base_dir, module + ".lua");
         if (fs.existsSync(script_path))
-            return new LuaScript(script_path, base_script.package);
+            return new LuaScript(script_path, base_script.package); // same pkg
 
-        /* then find the module relative to the entry dir */
-        var entry_dir = this.entryScript.baseDir;
-        script_path = path.join(entry_dir, module + ".lua");
-        if (fs.existsSync(script_path))
-            return new LuaScript(script_path, base_script.package);
-        
         /* then find the module relative to the script's main dir */
         if (base_script.package) {
             script_path = path.join(base_script.package.mainDir, module + ".lua");
             if (fs.existsSync(script_path))
-                return new LuaScript(script_path, base_script.package);
+                return new LuaScript(script_path, base_script.package); // same pkg
+        } else {
+            // entry script?
+            var entry_dir = this.entryScript.baseDir;
+            script_path = path.join(entry_dir, module + ".lua");
+            if (fs.existsSync(script_path))
+                return new LuaScript(script_path, null);
         }
 
         /* finally, find the module installed with npm */
         //console.dir(require.resolve.paths(module))
-        var pkg_path = null;
+        let nodeModPath = null;
+        /** @type {string?} */
+        let pkgPath
         try {
-            pkg_path = require.resolve(module + "/package.json", {
-                paths: [path.join(process.cwd(), "node_modules")]
+            nodeModPath = resolver(module, {
+                basedir: base_dir,
+                extensions: [".lua"],
+                includeCoreModules: false,
+                // "(Note: the second argument will change to "pkgfile" in v2)"
+                packageFilter: (pkgJson, pkgDir) => {
+                    pkgPath = pkgDir
+                    // edit pkg json to search onelua main
+                    pkgJson["main"] = pkgJson["onelua"]["main"]
+                    return pkgJson
+                }
             });
-        } catch (e) { }
-        if (!pkg_path)
+        } catch (e) { if (this.debug) console.error(e) }
+
+        if (this.debug) console.debug(module, nodeModPath, pkgPath)
+        if (!nodeModPath)
             return null;
 
-        var pkg = LuaPackage.fromPackageJson(pkg_path);
+        var pkg = LuaPackage.fromPackageJson(path.join(pkgPath, "/package.json"));
         if (!pkg)
             return null;  // invalid OL package
 
-        return new LuaScript(pkg.mainScriptPath, pkg);
+        return new LuaScript(nodeModPath, pkg);
     }
 
     #createFinalAst(modulesIds, modulesAst, mainAst) {
@@ -493,7 +514,7 @@ class OLProcessor {
 module.exports = {
     /**
      * @param {string} entry - Absolute path to the Lua script or project directory
-     * @param {{}} options 
+     * @param {{}} options
      * @returns {string}
      * @throws Throws on any error
      */

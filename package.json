@@ -9,12 +9,13 @@
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1"
   },
-  "author": "cngc4e",
+  "author": "Cassolette",
   "license": "MIT",
   "dependencies": {
     "argparse": "^2.0.1",
     "decache": "^4.6.0",
     "luamin": "^1.0.4",
-    "luaparse": "^0.2.1"
+    "luaparse": "^0.2.1",
+    "resolve": "^1.22.0"
   }
 }
