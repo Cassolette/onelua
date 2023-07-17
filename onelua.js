@@ -106,6 +106,9 @@ class OLProcessor {
             require("decache")("luaparse");
             const luaparse = require("luaparse");
 
+            // first come first served, assign an id right away to this module before doing so for children
+            const thisModuleId = is_entry ? 0 : ++currModuleId;
+
             /**
              *
              * @param {LuaScript} base_script
@@ -169,6 +172,57 @@ class OLProcessor {
                 return node;
             };
 
+            // package.loaded[...] = xx
+            var originalAssg = luaparse.ast["assignmentStatement"];
+            luaparse.ast["assignmentStatement"] = function () {
+                var node = originalAssg.apply(null, arguments);
+                // var node = {
+                //     "type": "AssignmentStatement",
+                //     "variables": [
+                //       {
+                //         "type": "IndexExpression",
+                //         "base": {
+                //           "type": "MemberExpression",
+                //           "indexer": ".",
+                //           "identifier": { "type": "Identifier", "name": "loaded" },
+                //           "base": { "type": "Identifier", "name": "package" }
+                //         },
+                //         "index": { "type": "VarargLiteral", "value": "...", "raw": "..." }
+                //       }
+                //     ],
+                //     "init": [{ "type": "Identifier", "name": "ModuleVarName" }]
+                //   }
+                //   {
+                //     "type": "AssignmentStatement",
+                //     "variables": [
+                //       {
+                //         "type": "IndexExpression",
+                //         "base": { "type": "Identifier", "name": "__OL__cached_packages" },
+                //         "index": { "type": "NumericLiteral", "value": 23, "raw": "23" }
+                //       }
+                //     ],
+                //     "init": [{ "type": "Identifier", "name": "Command" }]
+                //   },
+                if (node.variables[0]?.base?.type=="MemberExpression" &&
+                    node.variables[0]?.base?.base?.name == "package" &&
+                    node.variables[0]?.base?.identifier?.name == "loaded" &&
+                    node.variables[0]?.index?.type == "VarargLiteral" && node.variables[0]?.index?.value=="...") {
+                    if (is_entry) throw `Invalid package.loaded: cannot cache entry script as it is not a package`;
+                    if (this.debug || true) console.log("transforming package.loaded to OL_require")
+
+                    // replace package.loaded with __OL__cached_packages
+                    node.variables = [
+                        {
+                          "type": "IndexExpression",
+                          "base": { "type": "Identifier", "name": "__OL__cached_packages" },
+                          "index": { "type": "NumericLiteral", "value": thisModuleId, "raw": thisModuleId.toString() }
+                        }
+                    ]
+                    modulesIds[script.path] = thisModuleId;
+                }
+                return node;
+            };
+
             if (this.debug) console.log("!!!!!! parsing ast for " + script.path)
             //try {
             var ast = luaparse.parse(script.contents, {
@@ -185,13 +239,12 @@ class OLProcessor {
             if (is_entry) {
                 mainAst = ast;
             } else {
-                currModuleId++;
-                modulesIds[script.path] = currModuleId;
+                modulesIds[script.path] = thisModuleId;
                 //if (this.debug) console.dir(modulesIds)
-                if (this.debug) console.log("! The module '" + script.path + `' was resolved with id: ${currModuleId}`)
+                if (this.debug) console.log("! The module '" + script.path + `' was resolved with id: ${thisModuleId}`)
 
-                modulesAst[currModuleId] = ast;
-                return currModuleId;
+                modulesAst[thisModuleId] = ast;
+                return thisModuleId;
             }
         }
 
@@ -346,13 +399,6 @@ class OLProcessor {
                 }
             ]
         });
-
-        Object.keys(modulesAst).forEach((id) => {
-            finalAst.body.push(createRequireDef(id, modulesAst[id].body));
-            finalAst.globals.push(...modulesAst[id].globals);  // extend globals
-        });
-
-        /* define One-lua require() function */
         finalAst.body.push({
             "type": "LocalStatement",
             "variables": [
@@ -369,6 +415,13 @@ class OLProcessor {
                 }
             ]
         });
+
+        Object.keys(modulesAst).forEach((id) => {
+            finalAst.body.push(createRequireDef(id, modulesAst[id].body));
+            finalAst.globals.push(...modulesAst[id].globals);  // extend globals
+        });
+
+        /* define One-lua require() function */
         finalAst.body.push({
             "type": "AssignmentStatement",
             "variables": [
