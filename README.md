@@ -9,7 +9,7 @@ For simplicity's sake, we'll use [npm](https://www.npmjs.com/) only, so be sure 
 
 ### Merging Lua scripts
 ```
-npm install https://github.com/cngc4e/onelua#1.0.0
+npm install @cassolette/onelua
 ```
 
 In your Lua project, include build instructions for Onelua, where `main` refers to the entrypoint Lua script, and `output` refers to the output (resultant) Lua script.
