@@ -83,7 +83,11 @@ class OLProcessor {
     }
 
     process() {
-        var modulesIds = {};  /* path: id */
+        /**
+         * path: id
+         * negative id means module not exported yet (i.e. no `package.loaded` or `return`)
+         */
+        var modulesIds = {};  
         var modulesAst = {};  /* id: ast */
         var mainAst = null;
 
@@ -92,14 +96,22 @@ class OLProcessor {
         /**
          *
          * @param {LuaScript} script
-         * @param {boolean} is_entry
+         * @param {LuaScript?} previousScript
          * @returns {number} moduleId
          */
-        var recurseResolve = (script, is_entry) => {
+        var recurseResolve = (script, previousScript) => {
+            const is_entry = !previousScript;
+
             if (script.path in modulesIds) {
-                /* already resolved */
-                if (this.debug) console.log("> already resolved .")
-                return modulesIds[script.path];
+                const resolvedId = modulesIds[script.path];
+                if (resolvedId > 0) {
+                    // already resolved
+                    if (this.debug) console.log(`> already resolved with id ${modulesIds[script.path]}.`)
+                    return modulesIds[script.path];
+                } else if (resolvedId < 0) {
+                    // circular dependency!
+                    throw `Circular dependency caught between:\n  - ${script.path}\n  - ${previousScript.path}`;
+                }
             }
 
             /* delete luaparse cache */
@@ -108,6 +120,8 @@ class OLProcessor {
 
             // first come first served, assign an id right away to this module before doing so for children
             const thisModuleId = is_entry ? 0 : ++currModuleId;
+            // mark as resolving in progress
+            modulesIds[script.path] = -1;
 
             /**
              *
@@ -125,7 +139,7 @@ class OLProcessor {
                 if (this.debug) console.log(`found module in ${required.path}`);
 
                 // call recursive
-                var module_id = recurseResolve(required, false);
+                var module_id = recurseResolve(required, script);
                 if (this.debug) console.log(`got back id of ${module_id} (resolving for ${script.path})`);
 
                 return {
@@ -208,7 +222,7 @@ class OLProcessor {
                     node.variables[0]?.base?.identifier?.name == "loaded" &&
                     node.variables[0]?.index?.type == "VarargLiteral" && node.variables[0]?.index?.value=="...") {
                     if (is_entry) throw `Invalid package.loaded: cannot cache entry script as it is not a package`;
-                    if (this.debug || true) console.log("transforming package.loaded to OL_require")
+                    if (this.debug) console.log("transforming package.loaded to OL_require")
 
                     // replace package.loaded with __OL__cached_packages
                     node.variables = [
@@ -248,7 +262,7 @@ class OLProcessor {
             }
         }
 
-        recurseResolve(this.entryScript, true);
+        recurseResolve(this.entryScript, null);
 
         // merge the asts finally
         /*Object.keys(modulesAst).forEach((key) => {
